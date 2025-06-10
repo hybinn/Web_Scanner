@@ -16,6 +16,8 @@ class WebVulnScanner:
     self.login_urls = []
     self.search_forms = []
     self.login_form_fields = {}
+    self.admin_login_success = False
+    self.successful_login_detail = ""
     
   def log_result(self, vuln_name, status, details=""):
     result = {
@@ -609,6 +611,9 @@ class WebVulnScanner:
           if (login_response.status_code == 200 and 
               any(keyword in login_response.text.lower() for keyword in ['welcome', 'dashboard', 'logout', 'admin panel', 'profile', 'settings'])):
             vulnerable = True
+            self.admin_login_success = True
+            self.successful_login_detail =  f"취약한 계정({username}/{password})으로 로그인 성공"
+            details = self.successful_login_detail
             break
     except:
       pass
@@ -741,8 +746,12 @@ class WebVulnScanner:
     self.log_result("자동화 공격", vulnerable, "반복 요청 통제 취약" if vulnerable else "반복 요청 통제됨")
       
   def admin_page_exposure(self):
+    if self.admin_login_success:
+      details = f"{self.successful_login_detail}"
+      self.log_result("관리자 페이지 노출", True, details)
+      return
     admin_paths = [
-      '/admin', '/administrator', '/manager', '/master', '/system'
+      '/admin', '/administrator', '/manager', '/master', '/system', ':7001', ':8080', ':8443', ':8888'
     ]
     vulnerable = False
     exposed_pages = []
