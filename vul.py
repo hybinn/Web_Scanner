@@ -31,121 +31,172 @@ class WebVulnScanner:
   def find_forms(self):
     try:
       response = self.session.get(self.target_url, timeout=10)
+      response.raise_for_status()
       soup = BeautifulSoup(response.content, 'html.parser')
-      
-      login_links = []
+
+      # 로그인 링크 찾기
+      login_links = set()
+      login_keywords = ['login', 'signin', 'sign-in', 'sign_in', 'admin', 'log-in', 'log_in']
+
       for a in soup.find_all('a', href=True):
         href = a.get('href', '').lower()
-        text = a.get_text().lower()
-        if any(k in href + text for k in ['login', 'signin', 'sign-in', 'sign up', 'register']):
+        text = a.get_text(strip=True).lower()
+
+        if any(keyword in href or keyword in text for keyword in login_keywords):
           full_url = urljoin(self.target_url, a['href'])
-          if full_url not in login_links:
-            login_links.append(full_url)
-          
-      self.login_urls = login_links
-      
+          login_links.add(full_url)
+
+      self.login_urls = list(login_links)
+
       # 검색 폼 찾기
-      search_forms = []
+      search_forms = set()
+
       for form in soup.find_all('form'):
-        text_input = form.find('input', {'type': ['text', 'search']}) or form.find('input', {'name': re.compile(r'(search|query|q)', re.I)})
-        get_submit = form.find('input', {'type': ['submit', 'button']}) or form.find('button')
-        
-        if text_input and get_submit:
+        search_indicators = [
+          form.find('input', {'type': 'search'}),
+          form.find('input', {'name': re.compile(r'(search|query|q|keyword)', re.I)}),
+          form.find('input', {'placeholder': re.compile(r'(search|find|검색)', re.I)}),
+          form.find('input', {'id': re.compile(r'(search|query|q)', re.I)}),
+          'search' in form.get('action', '').lower(),
+          'search' in form.get('class', []) if form.get('class') else False
+        ]
+
+        has_search_element = any(search_indicators[:4]) or search_indicators[4] or search_indicators[5]
+        has_submit = form.find('input', {'type': ['submit', 'button']}) or form.find('button')
+
+        if has_search_element and has_submit:
           action = form.get('action', '')
-          if action:
-            form_url = urljoin(self.target_url, action)
-          else:
-            form_url = self.target_url
-          
-          if form_url not in search_forms:
-            search_forms.append(form_url)
-          
-      self.search_forms = search_forms
-      
-      default_login_path = ['/login', '/signin', '/sign-in', '/admin', '/signup']
-      for path in default_login_path:
+          form_url = urljoin(self.target_url, action) if action else self.target_url
+          search_forms.add(form_url)
+
+      self.search_forms = list(search_forms)
+
+      # 기본 로그인 경로 확인
+      default_login_paths = [
+        '/login', '/signin', '/sign-in', '/admin', '/signup',
+        '/user/login', '/account/login', '/auth/login',
+        '/login.php', '/signin.php', '/admin.php'
+      ]
+
+      for path in default_login_paths:
         full_url = self.target_url.rstrip('/') + path
         if full_url not in self.login_urls:
           try:
             test_response = self.session.get(full_url, timeout=5)
             if test_response.status_code == 200:
               test_soup = BeautifulSoup(test_response.content, 'html.parser')
-              if test_soup.find('form') and (test_soup.find('input', {'type':'password'}) or any(keyword in test_response.text.lower() for keyword in ['password', 'login'])):
+              has_form = test_soup.find('form')
+              has_password = test_soup.find('input', {'type': 'password'})
+              has_login_keywords = any(keyword in test_response.text.lower()
+                                      for keyword in ['password', 'login', 'username', 'email'])
+
+              if has_form and (has_password or has_login_keywords):
                 self.login_urls.append(full_url)
-          except:
-            pass
-          
+
+          except requests.exceptions.RequestException:
+            continue
+
       # 로그인 폼 필드 분석
       for login_url in self.login_urls:
         try:
           login_response = self.session.get(login_url, timeout=5)
           if login_response.status_code != 200:
             continue
+
           login_soup = BeautifulSoup(login_response.content, 'html.parser')
-          
           login_forms = login_soup.find_all('form')
+
+          if not login_forms:
+            print(f"No forms found at {login_url}")
+            continue
+
           target_form = None
-          
+
           for form in login_forms:
             if form.find('input', {'type': 'password'}):
               target_form = form
               break
-          
-          if not target_form and login_forms:
-            target_form = login_forms[0]
-          
-          if target_form:
-            fields = {}
-            username_field = None
-            password_field = None
-            
-            for input_tag in target_form.find_all('input'):
-              name = input_tag.get('name', '')
-              if not name:
-                continue
-              
-              input_type = input_tag.get('type', 'text')
-              input_id = input_tag.get('id', '').lower()
-              placeholder = input_tag.get('placeholder', '').lower()
-              
-              # username 필드 찾기
-              if (input_type in ['text', 'email'] and 
-                  (any(keyword in name.lower() for keyword in ['user', 'id', 'email', 'name', 'login']) or
-                  any(keyword in input_id for keyword in ['user', 'id','email', 'name', 'login']) or
-                  any(keyword in placeholder for keyword in ['user', 'id', 'email', 'name', 'login']))):
-                username_field = name
-              elif (input_type == 'password' or 
-                    any(keyword in name.lower() for keyword in ['pass', 'pwd']) or
-                    any(keyword in input_id for keyword in ['pass', 'pwd']) or
-                    any(keyword in placeholder for keyword in ['pass', 'pwd'])):
-                password_field = name
-              elif input_type == 'hidden':
-                fields[name] = input_tag.get('value', '')
-                
-            action = target_form.get('action', '')
-            method = target_form.get('method', 'post').lower()
-            form_action_url = urljoin(login_url, action) if action else login_url
-            
-            if username_field:
-              fields['username'] = username_field
-            if password_field:
-              fields['password'] = password_field
-            
-            fields['form_action'] = form_action_url
-            fields['form_method'] = method
-            
-            if username_field or password_field:
-              self.login_form_fields[login_url] = fields
-        except Exception as e:
+            action = form.get('action', '').lower()
+            if any(keyword in action for keyword in ['login', 'signin', 'auth']):
+              target_form = form
+              break
+            form_class = form.get('class', [])
+            if any(keyword in ' '.join(form_class).lower() for keyword in ['login', 'signin', 'auth']):
+              target_form = form
+              break
+
+          if not target_form:
+            print(f"No login form found at {login_url}")
+            continue
+
+          fields = {}
+          username_field = None
+          password_field = None
+
+          for input_tag in target_form.find_all('input'):
+            name = input_tag.get('name', '').strip()
+            if not name:
+              continue
+
+            input_type = input_tag.get('type', 'text').lower()
+            input_id = input_tag.get('id', '').lower()
+            input_class = ' '.join(input_tag.get('class', [])).lower()
+            placeholder = input_tag.get('placeholder', '').lower()
+
+            username_keywords = ['user', 'id', 'email', 'name', 'login', 'account']
+            username_indicators = [
+              input_type in ['text', 'email'],
+              any(keyword in name.lower() for keyword in username_keywords),
+              any(keyword in input_id for keyword in username_keywords),
+              any(keyword in input_class for keyword in username_keywords),
+              any(keyword in placeholder for keyword in username_keywords)
+            ]
+
+            if username_indicators[0] and any(username_indicators[1:]):
+              username_field = name
+
+            password_keywords = ['pass', 'pwd', 'password']
+            password_indicators = [
+              input_type == 'password',
+              any(keyword in name.lower() for keyword in password_keywords),
+              any(keyword in input_id for keyword in password_keywords),
+              any(keyword in input_class for keyword in password_keywords)
+            ]
+
+            if any(password_indicators):
+              password_field = name
+            elif input_type == 'hidden':
+              fields[name] = input_tag.get('value', '')
+
+          action = target_form.get('action', '').strip()
+          method = target_form.get('method', 'post').lower()
+          form_action_url = urljoin(login_url, action) if action else login_url
+
+          if username_field:
+            fields['username'] = username_field
+          if password_field:
+            fields['password'] = password_field
+
+          fields['form_action'] = form_action_url
+          fields['form_method'] = method
+
+          if username_field or password_field:
+            self.login_form_fields[login_url] = fields
+
+        except requests.exceptions.RequestException:
           continue
-    
+
+      print(f"발견된 로그인 URL ({len(self.login_urls)}개): {self.login_urls}")
+      print(f"발견된 검색 폼 URL ({len(self.search_forms)}개): {self.search_forms}")
+      print(f"분석된 로그인 폼 필드 ({len(self.login_form_fields)}개): {self.login_form_fields}")
+
+    except requests.exceptions.RequestException as e:
+      print(f"메인 페이지 요청 중 네트워크 오류: {e}")
+      return False
     except Exception as e:
-      print(f"폼 검색 중 오류 {e}")
-    
-    print(f"로그인 URL: {self.login_urls}")
-    print(f"검색 폼 URL: {self.search_forms}")
-    print(f"로그인 폼 필드: {self.login_form_fields}")
-    
+      print(f"폼 검색 중 예상치 못한 오류: {e}")
+      return False
+        
   def buffer_overflow(self):
     long_str = 'A' * 5000
     test_cases = [
