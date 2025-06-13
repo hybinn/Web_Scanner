@@ -35,7 +35,7 @@ class WebVulnScanner:
       soup = BeautifulSoup(response.content, 'html.parser')
 
       # 로그인 링크 찾기
-      login_links = set()
+      login_links = []
       login_keywords = ['login', 'signin', 'sign-in', 'sign_in', 'admin', 'log-in', 'log_in']
 
       for a in soup.find_all('a', href=True):
@@ -44,12 +44,12 @@ class WebVulnScanner:
 
         if any(keyword in href or keyword in text for keyword in login_keywords):
           full_url = urljoin(self.target_url, a['href'])
-          login_links.add(full_url)
+          login_links.append(full_url)
 
-      self.login_urls = list(login_links)
+      self.login_urls = login_links
 
       # 검색 폼 찾기
-      search_forms = set()
+      search_forms = []
 
       for form in soup.find_all('form'):
         search_indicators = [
@@ -67,9 +67,9 @@ class WebVulnScanner:
         if has_search_element and has_submit:
           action = form.get('action', '')
           form_url = urljoin(self.target_url, action) if action else self.target_url
-          search_forms.add(form_url)
+          search_forms.append(form_url)
 
-      self.search_forms = list(search_forms)
+      self.search_forms = search_forms
 
       # 기본 로그인 경로 확인
       default_login_paths = [
@@ -186,9 +186,9 @@ class WebVulnScanner:
         except requests.exceptions.RequestException:
           continue
 
-      print(f"발견된 로그인 URL ({len(self.login_urls)}개): {self.login_urls}")
-      print(f"발견된 검색 폼 URL ({len(self.search_forms)}개): {self.search_forms}")
-      print(f"분석된 로그인 폼 필드 ({len(self.login_form_fields)}개): {self.login_form_fields}")
+      #print(f"발견된 로그인 URL ({len(self.login_urls)}개): {self.login_urls}")
+      #print(f"발견된 검색 폼 URL ({len(self.search_forms)}개): {self.search_forms}")
+      #print(f"분석된 로그인 폼 필드 ({len(self.login_form_fields)}개): {self.login_form_fields}")
 
     except requests.exceptions.RequestException as e:
       print(f"메인 페이지 요청 중 네트워크 오류: {e}")
